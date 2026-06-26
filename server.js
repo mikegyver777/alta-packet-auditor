@@ -41,6 +41,20 @@ app.post("/api/audit", async (req, res) => {
     let result;
     try { result = JSON.parse(txt); }
     catch { return res.status(502).json({ error: "Could not parse model output.", raw: txt }); }
+
+    // Safety net: drop any "flag" that is actually hedging/reasoning rather than a
+    // confirmed error. The rulebook forbids these, but this guarantees they never
+    // reach the screen even if the model slips.
+    const HEDGE = /\b(this is correct|no flag needed|disregard|acceptable|verify|double[- ]?check|re-?examin|though|however|appears? to|may be|might be|unclear|ambiguous|no change occurred|is present; if|should equal|confirm)\b/i;
+    if (Array.isArray(result.flags)) {
+      result.flags = result.flags.filter(f => {
+        const t = (f && f.issue ? String(f.issue) : "");
+        if (!t) return false;
+        if (HEDGE.test(t)) return false;            // hedged → not a real flag
+        if (t.split(/\s+/).length > 16) return false; // long → reasoning dump
+        return true;
+      });
+    }
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message || String(e) });

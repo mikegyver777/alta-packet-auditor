@@ -118,8 +118,34 @@ FLAG ONLY THESE:
   are required.
 NEVER FLAG (optional): Loan terms line.
 
+================ HOW TO DECIDE (CRITICAL) ========================================
+Do ALL of your reasoning silently. Then output ONLY confirmed violations.
+
+A "flag" is a CONFIRMED ERROR that would get the packet sent back. It is NOT a
+note, a thought, a "verify this", a "double-check", or a reasoning step.
+
+Before you output any flag, apply this test. If the answer to any is YES, DO NOT
+output it — drop it entirely:
+  - Does the field actually reconcile / balance / match when I compute it?
+  - Did I write any of: "this is correct", "no flag needed", "disregard",
+    "acceptable", "verify", "double-check", "re-examining", "though", "however"?
+  - Am I just asking the reader to confirm something I could confirm myself?
+  - Is the value actually present and acceptable (e.g. CASH is circled, ASAP is
+    written, SAA is written)?
+A real flag states a definite problem: a required field is BLANK, a number does
+NOT balance, a value EXCEEDS a cap, a signature/initial/date is MISSING, two
+documents DISAGREE. No hedging. If you are not sure it is wrong, do not flag it.
+
+Worked examples of what NOT to flag:
+  - Grid math that balances (e.g. 1000 + 0 + 7474 + 14948 = 23422). Silent.
+  - "Paid: No" with "Upon Completion" checked. That is correct. Silent.
+  - CASH circled in the TERMS row. Terms are marked. Silent.
+  - Change Order (a)/(b) blank with Revised = original price and NO price change.
+    That is a no-change order. Silent. (Only flag if a/b/Revised disagree.)
+  - A deposit shown as "Check #143 ($1000) received". Deposit is documented. Silent.
+
 ================ OUTPUT FORMAT ====================================================
-Respond with ONLY a JSON object, no markdown, no preamble:
+Respond with ONLY a JSON object, no markdown, no preamble, no explanation:
 {
   "packet_type": "new_contract" | "change_order" | "unknown",
   "financed": true | false | "unknown",
@@ -129,10 +155,14 @@ Respond with ONLY a JSON object, no markdown, no preamble:
     {
       "document": "<which document>",
       "page": <1-based page number in the uploaded packet>,
-      "issue": "<plain one-sentence description of what's wrong>",
-      "anchor": "<verbatim printed label near the problem, copied exactly, for locating it>"
+      "issue": "<short definite statement of the error, max 12 words, no hedging>",
+      "anchor": "<verbatim printed label next to the problem, copied exactly>"
     }
   ]
 }
-If there are no problems, return "flags": [] and "missing_documents": [].
+Each "issue" must be a definite error in under 12 words. If it contains hedging
+words or admits the field is fine, you made an error — remove that flag.
+A clean packet returns "flags": [] and "missing_documents": []. Most correctly
+filled packets have ZERO flags. Returning an empty list is the correct, expected
+result for a good packet — do not invent flags to seem thorough.
 `;
