@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Alta Packet Auditor</title>
+<style>
+  body{margin:0;background:#e9e6df;color:#1a1a1a;
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
+  .bar{position:sticky;top:0;z-index:30;background:#1f3a5f;color:#fff;padding:11px 18px;
+    display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
+  .bar h1{font-size:16px;margin:0;}
+  .bar .tag{font-size:10px;letter-spacing:2px;text-transform:uppercase;opacity:.7;}
+  .bar .right{margin-left:auto;display:flex;gap:8px;}
+  .btn{cursor:pointer;border:none;border-radius:4px;font-size:12px;
+    text-transform:uppercase;letter-spacing:.5px;padding:9px 14px;font-weight:600;}
+  .btn-ghost{background:transparent;color:#fff;border:1px solid #5b7da0;}
+  .btn:disabled{opacity:.4;cursor:not-allowed;}
+  .stage{max-width:920px;margin:0 auto;padding:20px 16px 80px;}
+  .drop{border:2px dashed #c9c2b6;border-radius:8px;background:#fff;padding:54px 20px;
+    text-align:center;color:#8a8175;cursor:pointer;font-size:16px;margin-top:24px;}
+  .drop.drag{border-color:#1f3a5f;background:#eef2f7;}
+  .drop b{color:#1a1a1a;}.drop small{display:block;margin-top:8px;font-size:12px;}
+  .status{text-align:center;color:#1f3a5f;font-size:14px;margin:22px 0;}
+  .err{text-align:center;color:#b5341f;font-size:14px;margin:18px 0;}
+  .spin{display:inline-block;width:13px;height:13px;border:2px solid #d6d0c6;
+    border-top-color:#1f3a5f;border-radius:50%;animation:sp .7s linear infinite;
+    vertical-align:middle;margin-right:6px;}
+  @keyframes sp{to{transform:rotate(360deg);}}
+
+  .verdict{border-radius:8px;padding:18px 20px;margin-bottom:18px;font-size:15px;}
+  .v-clean{background:#e7f4ec;border:1px solid #b6dcc4;color:#155f37;}
+  .v-flags{background:#fdeceb;border:1px solid #f1c4c0;color:#a52015;}
+  .verdict h2{margin:0 0 10px;font-size:17px;}
+  .verdict ul{margin:0;padding-left:20px;}
+  .verdict li{margin-bottom:8px;line-height:1.45;}
+  .verdict li .doc{font-weight:700;}
+  .verdict .miss{margin-top:12px;padding-top:10px;border-top:1px solid #f1c4c0;}
+  .meta{font-size:12px;color:#7a726a;margin:2px 0 14px;}
+
+  .docblock{margin-bottom:30px;}
+  .doctitle{font-size:13px;font-weight:700;color:#1f3a5f;text-transform:uppercase;
+    letter-spacing:.5px;margin:0 0 10px;border-bottom:2px solid #1f3a5f;padding-bottom:6px;}
+  .pagewrap{position:relative;margin:0 auto 16px;background:#fff;
+    box-shadow:0 1px 8px rgba(0,0,0,.15);width:fit-content;}
+  .pagewrap canvas{display:block;}
+  .flagbox{position:absolute;border:3px solid #d8001d;border-radius:3px;
+    background:rgba(216,0,29,.07);pointer-events:none;}
+  .flagnum{position:absolute;background:#d8001d;color:#fff;font-size:11px;font-weight:700;
+    border-radius:9px;padding:1px 6px;pointer-events:none;transform:translateY(-100%);}
+
+  @media print{.bar,.drop,.status,.err,.noprint{display:none!important;}
+    body{background:#fff;}.stage{max-width:none;padding:0;}
+    .verdict{box-shadow:none;}.pagewrap{box-shadow:none;page-break-inside:avoid;}}
+</style>
+</head>
+<body>
+<div class="bar">
+  <h1>Alta Packet Auditor</h1><span class="tag">flags only what's wrong</span>
+  <div class="right">
+    <input type="file" id="file" accept="application/pdf" multiple hidden>
+    <button class="btn btn-ghost" id="openBtn">Open Packet PDF(s)</button>
+    <button class="btn btn-ghost noprint" id="printBtn" disabled>Print</button>
+  </div>
+</div>
+
+<div class="stage">
+  <div id="drop" class="drop"><b>Drop the contract packet here</b>
+    <small>all pages / all PDFs at once — DocuSign or phone scan</small></div>
+  <div id="status" class="status" style="display:none"></div>
+  <div id="err" class="err" style="display:none"></div>
+  <div id="verdict"></div>
+  <div id="out"></div>
+</div>
+
+<script type="module">
+import * as pdfjsLib from 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.mjs';
+pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.mjs';
+const $=s=>document.querySelector(s);
+const SCALE=1.7;
+
+$('#openBtn').onclick=()=>$('#file').click();
+const drop=$('#drop');
+drop.onclick=()=>$('#file').click();
+$('#file').onchange=e=>{if(e.target.files.length)run([...e.target.files]);};
+drop.ondragover=e=>{e.preventDefault();drop.classList.add('drag');};
+drop.ondragleave=()=>drop.classList.remove('drag');
+drop.ondrop=e=>{e.preventDefault();drop.classList.remove('drag');if(e.dataTransfer.files.length)run([...e.dataTransfer.files]);};
+function status(h){const s=$('#status');s.style.display=h?'block':'none';s.innerHTML=h;}
+function showErr(h){const s=$('#err');s.style.display=h?'block':'none';s.textContent=h;}
+
+// OCR (only for scanned pages, to locate anchors)
+let _tess=null;
+function loadTess(){if(_tess)return _tess;_tess=new Promise((res,rej)=>{const sc=document.createElement('script');
+  sc.src='https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.4/tesseract.min.js';
+  sc.onload=()=>res(window.Tesseract);sc.onerror=()=>rej(new Error('OCR blocked'));document.head.appendChild(sc);});return _tess;}
+let _worker=null;
+async function ocrWords(canvas){const T=await loadTess();if(!_worker)_worker=await T.createWorker('eng');
+  const r=await _worker.recognize(canvas,{},{blocks:true});
+  return (r.data.words||[]).filter(w=>w.text&&w.text.trim()&&w.bbox).map(w=>({str:w.text,x:w.bbox.x0,y:w.bbox.y0,w:w.bbox.x1-w.bbox.x0,h:w.bbox.y1-w.bbox.y0}));}
+
+const PAGES=[]; // {wrap,w,h,items}
+
+async function run(files){
+  files=files.filter(f=>f.type==='application/pdf');
+  if(!files.length){showErr('Please choose PDF files.');return;}
+  showErr('');$('#out').innerHTML='';$('#verdict').innerHTML='';drop.style.display='none';PAGES.length=0;
+  const images=[];
+  try{
+    let pageNo=0;
+    for(const f of files){
+      const block=document.createElement('div');block.className='docblock';
+      block.innerHTML='<div class="doctitle">'+esc(f.name)+'</div>';
+      $('#out').appendChild(block);
+      const buf=await f.arrayBuffer();
+      const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+      for(let i=1;i<=pdf.numPages;i++){
+        pageNo++;
+        status('<span class="spin"></span> Rendering page '+pageNo+'…');
+        const page=await pdf.getPage(i);
+        const vp=page.getViewport({scale:SCALE});
+        const wrap=document.createElement('div');wrap.className='pagewrap';
+        wrap.style.width=vp.width+'px';wrap.style.height=vp.height+'px';
+        const cv=document.createElement('canvas');cv.width=vp.width;cv.height=vp.height;
+        await page.render({canvasContext:cv.getContext('2d'),viewport:vp}).promise;
+        wrap.appendChild(cv);block.appendChild(wrap);
+        // text layer for anchor location
+        const tc=await page.getTextContent();
+        let items=tc.items.map(it=>{const tx=pdfjsLib.Util.transform(vp.transform,it.transform);
+          const h=Math.hypot(tx[2],tx[3]);return {str:it.str,x:tx[4],y:tx[5]-h,w:it.width*SCALE,h};}).filter(it=>it.str.trim());
+        if(items.length<5){ // scan → OCR for anchor positions
+          status('<span class="spin"></span> Scanned page '+pageNo+' — OCR (slower)…');
+          try{ items=await ocrWords(cv);}catch{ items=[]; }
+        }
+        PAGES.push({wrap,w:vp.width,h:vp.height,items});
+        images.push(cv.toDataURL('image/jpeg',0.7).split(',')[1]);
+      }
+    }
+    if(_worker){try{await _worker.terminate();}catch{}_worker=null;}
+
+    status('<span class="spin"></span> Auditing the packet against the rulebook…');
+    const result=await audit(images);
+    status('');
+    renderVerdict(result);
+    placeFlags(result.flags||[]);
+    $('#printBtn').disabled=false;
+  }catch(e){status('');showErr(e.message||String(e));}
+}
+
+async function audit(images){
+  const res=await fetch('/api/audit',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({images})});
+  const data=await res.json().catch(()=>({error:'Bad server response'}));
+  if(!res.ok)throw new Error(data.error||('Server '+res.status));
+  return data;
+}
+
+function renderVerdict(r){
+  const flags=r.flags||[], miss=r.missing_documents||[];
+  const v=document.createElement('div');v.className='verdict '+((flags.length||miss.length)?'v-flags':'v-clean');
+  const metaBits=[];
+  if(r.packet_type)metaBits.push('type: '+r.packet_type.replace('_',' '));
+  if(r.financed!==undefined)metaBits.push('financed: '+r.financed);
+  if(r.documents_found&&r.documents_found.length)metaBits.push('found: '+r.documents_found.join(', '));
+  if(!flags.length&&!miss.length){
+    v.innerHTML='<h2>✓ Packet looks clean</h2><div class="meta">'+esc(metaBits.join(' · '))+'</div>'+
+      '<p style="margin:0">No rule violations found.</p>';
+  }else{
+    let html='<h2>'+flags.length+' issue'+(flags.length===1?'':'s')+' to fix</h2>'+
+      '<div class="meta">'+esc(metaBits.join(' · '))+'</div><ul>';
+    flags.forEach((f,i)=>{html+='<li><span class="doc">['+(i+1)+'] '+esc(f.document||'')+
+      (f.page?' p.'+f.page:'')+':</span> '+esc(f.issue||'')+'</li>';});
+    html+='</ul>';
+    if(miss.length)html+='<div class="miss"><strong>Missing required document(s):</strong> '+esc(miss.join(', '))+'</div>';
+    v.innerHTML=html;
+  }
+  $('#verdict').appendChild(v);
+}
+
+function placeFlags(flags){
+  flags.forEach((f,idx)=>{
+    const pi=(f.page||1)-1;const p=PAGES[pi];if(!p)return;
+    const box=locate(p.items,f.anchor);
+    if(!box)return; // can't pin → it's still in the list above
+    const b=document.createElement('div');b.className='flagbox';
+    b.style.left=(box.x-4)+'px';b.style.top=(box.y-4)+'px';
+    b.style.width=(box.w+8)+'px';b.style.height=(box.h+8)+'px';
+    p.wrap.appendChild(b);
+    const n=document.createElement('div');n.className='flagnum';n.textContent=idx+1;
+    n.style.left=(box.x-4)+'px';n.style.top=(box.y-4)+'px';p.wrap.appendChild(n);
+  });
+}
+
+// fuzzy anchor locator (handles OCR noise)
+function tok(s){return (s||'').toLowerCase().replace(/[^a-z0-9]/g,'');}
+function sim(a,b){if(a===b)return 1;if(a.length<2||b.length<2)return a===b?1:0;
+  const big=s=>{const m=new Map();for(let i=0;i<s.length-1;i++){const g=s.slice(i,i+2);m.set(g,(m.get(g)||0)+1);}return m;};
+  const A=big(a),B=big(b);let inter=0,total=0;A.forEach((c,g)=>{total+=c;if(B.has(g))inter+=Math.min(c,B.get(g));});B.forEach(c=>total+=c);return 2*inter/total;}
+function fz(a,b){if(a===b)return true;if(b.length>=4&&(a.indexOf(b)!==-1||b.indexOf(a)!==-1))return true;return sim(a,b)>=0.72;}
+function locate(items,anchor){
+  if(!anchor)return null;
+  const seq=String(anchor).toLowerCase().replace(/[^a-z0-9 ]/g,' ').split(/\s+/).filter(Boolean).map(tok).filter(Boolean);
+  if(!seq.length)return null;const low=items.map(it=>tok(it.str));const n=seq.length;
+  for(let i=0;i+n<=low.length;i++){let sc=0;for(let k=0;k<n;k++)if(fz(low[i+k],seq[k]))sc++;
+    if(sc>=Math.max(2,Math.floor(n*0.6))){const run=items.slice(i,i+n);const y0=run[0].y;
+      const set=run.filter(u=>Math.abs(u.y-y0)<run[0].h*0.9);const use=set.length?set:run;
+      const x=Math.min(...use.map(u=>u.x)),right=Math.max(...use.map(u=>u.x+u.w)),yy=Math.min(...use.map(u=>u.y)),hh=Math.max(...use.map(u=>u.h));
+      return {x,y:yy,w:right-x,h:hh};}}
+  let d='';seq.forEach(t=>{if(t.length>d.length)d=t;});
+  if(d.length>=5)for(let i=0;i<low.length;i++)if(fz(low[i],d)){const u=items[i];return {x:u.x,y:u.y,w:u.w+60,h:u.h};}
+  return null;
+}
+
+$('#printBtn').onclick=()=>window.print();
+function esc(s){return(s||'').replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));}
+</script>
+</body>
+</html>
